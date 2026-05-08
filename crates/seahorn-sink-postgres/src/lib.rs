@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use seahorn_core::{ChangeSet, Cursor, EntityChange, Sink, Step, Value};
 use serde_json::{Map, Value as Json};
@@ -48,6 +50,33 @@ impl PostgresSink {
             let bytes: Vec<u8> = r.get("cursor_bytes");
             Cursor(bytes)
         }))
+    }
+
+    /// Spawns a background task that periodically promotes confirmed rows to FINAL
+    /// by querying the Solana RPC for the current finalized slot.
+    ///
+    /// The handle is detached — it runs until the process exits.
+    pub fn start_sweeper(&self, rpc_url: String) {
+        let pool = self.pool.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                interval.tick().await;
+                match fetch_finalized_slot(&client, &rpc_url).await {
+                    Ok(slot) => {
+                        match promote_to_final(&pool, slot).await {
+                            Ok(0) => {}
+                            Ok(rows) => tracing::info!(slot, rows, "sweeper: promoted to FINAL"),
+                            Err(e) => tracing::warn!("sweeper db error: {e}"),
+                        }
+                    }
+                    Err(e) => tracing::warn!("sweeper rpc error: {e}"),
+                }
+            }
+        });
     }
 }
 
@@ -121,6 +150,39 @@ impl Sink for PostgresSink {
 
         Ok(())
     }
+}
+
+async fn fetch_finalized_slot(client: &reqwest::Client, rpc_url: &str) -> Result<u64> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSlot",
+        "params": [{"commitment": "finalized"}]
+    });
+
+    let resp: serde_json::Value = client
+        .post(rpc_url)
+        .json(&body)
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    resp["result"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("unexpected RPC response: {resp}"))
+}
+
+async fn promote_to_final(pool: &PgPool, finalized_slot: u64) -> Result<u64> {
+    let rows = sqlx::query(
+        "UPDATE entity_changes SET commitment_status = 'FINAL' \
+         WHERE slot <= $1 AND commitment_status = 'NEW'",
+    )
+    .bind(finalized_slot as i64)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(rows)
 }
 
 async fn upsert_cursor(

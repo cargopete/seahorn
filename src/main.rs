@@ -67,6 +67,13 @@ async fn main() -> Result<()> {
         let sink = PostgresSink::connect(&db_url).await?;
         let from = sink.load_cursor().await?;
 
+        if let Ok(rpc_url) = std::env::var("SOLANA_RPC_URL") {
+            tracing::info!("finalization sweeper active");
+            sink.start_sweeper(rpc_url);
+        } else {
+            tracing::info!("SOLANA_RPC_URL not set — finalization sweeper disabled");
+        }
+
         if let Some(ref c) = from {
             let slot = u64::from_le_bytes(c.0.clone().try_into().unwrap_or([0u8; 8]));
             tracing::info!(slot, "resuming from persisted cursor");
