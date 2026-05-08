@@ -1,0 +1,10 @@
+[package]
+name = "seahorn-handler-pumpfun"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+seahorn-core = { path = "../seahorn-core" }
+sha2 = { version = "0.10", default-features = false }
+bs58 = "0.5.1"
+anyhow = "1"

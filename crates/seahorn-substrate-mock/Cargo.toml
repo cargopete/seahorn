@@ -1,0 +1,14 @@
+[package]
+name = "seahorn-substrate-mock"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+seahorn-core = { path = "../seahorn-core" }
+anyhow = "1"
+futures = "0.3"
+rand = "0.8"
+bs58 = "0.5.1"
+sha2 = { version = "0.10", default-features = false }
+async-stream = "0.3"
+tokio = { version = "1", features = ["time"] }

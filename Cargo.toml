@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/seahorn-core",
+    "crates/seahorn-substrate-mock",
+    "crates/seahorn-handler-pumpfun",
+]
+
+[workspace.dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+bs58 = "0.5.1"
+rand = "0.8"
+
+[package]
+name = "seahorn"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "seahorn"
+path = "src/main.rs"
+
+[dependencies]
+seahorn-core = { path = "crates/seahorn-core" }
+seahorn-substrate-mock = { path = "crates/seahorn-substrate-mock" }
+seahorn-handler-pumpfun = { path = "crates/seahorn-handler-pumpfun" }
+
+# Yellowstone (live substrate)
+yellowstone-grpc-proto = { version = "2", default-features = false }
+tonic = { version = "0.12", features = ["tls", "tls-roots"] }
+
+# Runtime + utils
+tokio = { workspace = true }
+tokio-stream = "0.1"
+async-stream = "0.3"
+futures = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+anyhow = { workspace = true }
+bs58 = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
