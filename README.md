@@ -55,16 +55,19 @@ The `Handler → ChangeSet` split is non-negotiable. It is what makes handlers d
 | `seahorn-substrate-mock` | ✅ | `PumpfunMockSubstrate` — synthetic buy/sell/create stream, no credentials needed |
 | `seahorn-handler-pumpfun` | ✅ | Anchor discriminators via SHA-256, Borsh decode, typed `Buy` / `Sell` / `Create` structs |
 | `seahorn-sink-postgres` | ✅ | Append-only writes, JSONB fields, cursor persistence, finalization sweeper |
+| `seahorn-handler-raydium` | ✅ | Raydium CLMM — swap, openPosition, addLiquidity, removeLiquidity (+ v2 variants) |
+| `seahorn-handler-jupiter` | ✅ | Jupiter v6 — shared_accounts_route, exact_out_route, route_plan skip table (40+ Swap variants) |
+| `MultiHandler` (in core) | ✅ | Run any combination of handlers against the same stream simultaneously |
 | `StdoutSink` (in runtime) | ✅ | Pretty-prints each `ChangeSet` to terminal |
-| Yellowstone gRPC substrate (in runtime) | ✅ | Live Pump.fun data via any Yellowstone endpoint |
+| Yellowstone gRPC substrate (in runtime) | ✅ | Live data via any Yellowstone endpoint, multi-program filter |
 | Docker Compose | ✅ | `postgres` + `postgrest` — REST API at `localhost:3000` |
 
 ### What comes next
 
 | Step | What it delivers |
 |---|---|
-| More decoders | Raydium CLMM, Jupiter v6, Orca Whirlpools via the same `Handler` trait |
-| Horizon integration | Sealevel as a data service on The Graph's Horizon protocol (v2) |
+| Horizon integration | `SolanaDataService.sol` + `seahorn-gateway` — TAP v2 payments, GRT settlement, provider registration |
+| More programs | Orca Whirlpools, Drift, Marginfi via the same `Handler` trait |
 
 ---
 
@@ -73,7 +76,10 @@ The `Handler → ChangeSet` split is non-negotiable. It is what makes handlers d
 ### stdout (no dependencies)
 
 ```bash
-cargo run -- --mock
+cargo run -- --mock                    # Pump.fun
+cargo run -- --mock --raydium          # Raydium CLMM
+cargo run -- --mock --jupiter          # Jupiter v6
+cargo run -- --mock --all              # all three simultaneously
 ```
 
 ```
@@ -122,9 +128,11 @@ cargo run -- --postgres
 ```
 seahorn/
 ├── crates/
-│   ├── seahorn-core/              # Core traits and types
-│   ├── seahorn-substrate-mock/    # Mock substrates for local dev
+│   ├── seahorn-core/              # Core traits, types, MultiHandler
+│   ├── seahorn-substrate-mock/    # Mock substrates (Pump.fun, Raydium CLMM, Jupiter v6)
 │   ├── seahorn-handler-pumpfun/   # Pump.fun decoder (Anchor + Borsh)
+│   ├── seahorn-handler-raydium/   # Raydium CLMM decoder (swap, position, liquidity)
+│   ├── seahorn-handler-jupiter/   # Jupiter v6 decoder (route_plan skip table)
 │   └── seahorn-sink-postgres/     # PostgresSink with cursor persistence + sweeper
 ├── docker/
 │   ├── init.sql                   # PostgREST web_anon role

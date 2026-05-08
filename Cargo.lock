@@ -1850,6 +1850,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "seahorn-core",
+ "seahorn-handler-jupiter",
  "seahorn-handler-pumpfun",
  "seahorn-handler-raydium",
  "seahorn-sink-postgres",
@@ -1868,6 +1869,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures",
+]
+
+[[package]]
+name = "seahorn-handler-jupiter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bs58",
+ "seahorn-core",
+ "sha2",
 ]
 
 [[package]]

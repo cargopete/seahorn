@@ -79,3 +79,6 @@ pub use pumpfun::PumpfunMockSubstrate;
 
 pub mod raydium_clmm;
 pub use raydium_clmm::RaydiumClmmMockSubstrate;
+
+pub mod jupiter;
+pub use jupiter::JupiterV6MockSubstrate;

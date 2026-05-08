@@ -6,9 +6,10 @@ use seahorn_core::{
     Value,
 };
 use seahorn_handler_pumpfun::{PumpfunHandler, PUMPFUN_PROGRAM_ID};
+use seahorn_handler_jupiter::{JupiterV6Handler, JUPITER_V6_PROGRAM_ID};
 use seahorn_handler_raydium::{RaydiumClmmHandler, RAYDIUM_CLMM_PROGRAM_ID};
 use seahorn_sink_postgres::PostgresSink;
-use seahorn_substrate_mock::{PumpfunMockSubstrate, RaydiumClmmMockSubstrate};
+use seahorn_substrate_mock::{JupiterV6MockSubstrate, PumpfunMockSubstrate, RaydiumClmmMockSubstrate};
 use tonic::{
     transport::{Channel, ClientTlsConfig},
     Request,
@@ -29,11 +30,15 @@ struct Cli {
     #[arg(long)]
     postgres: bool,
 
-    /// Index Raydium CLMM instead of Pump.fun (use --all for both)
+    /// Index Raydium CLMM instead of Pump.fun
     #[arg(long)]
     raydium: bool,
 
-    /// Index both Pump.fun and Raydium CLMM simultaneously
+    /// Index Jupiter v6 instead of Pump.fun
+    #[arg(long)]
+    jupiter: bool,
+
+    /// Index all programs simultaneously (Pump.fun + Raydium CLMM + Jupiter v6)
     #[arg(long)]
     all: bool,
 }
@@ -77,9 +82,12 @@ async fn main() -> Result<()> {
         Box::new(MultiHandler::new(vec![
             Box::new(PumpfunHandler),
             Box::new(RaydiumClmmHandler),
+            Box::new(JupiterV6Handler),
         ]))
     } else if cli.raydium {
         Box::new(RaydiumClmmHandler)
+    } else if cli.jupiter {
+        Box::new(JupiterV6Handler)
     } else {
         Box::new(PumpfunHandler)
     };
@@ -103,7 +111,10 @@ async fn main() -> Result<()> {
         }
 
         if cli.mock {
-            if cli.raydium || cli.all {
+            if cli.jupiter {
+                tracing::info!("Jupiter v6 mock → PostgresSink");
+                run(JupiterV6MockSubstrate::default(), handler, sink, from).await
+            } else if cli.raydium || cli.all {
                 tracing::info!("Raydium CLMM mock → PostgresSink");
                 run(RaydiumClmmMockSubstrate::default(), handler, sink, from).await
             } else {
@@ -118,7 +129,10 @@ async fn main() -> Result<()> {
         let sink = StdoutSink;
 
         if cli.mock {
-            if cli.raydium || cli.all {
+            if cli.jupiter {
+                tracing::info!("Jupiter v6 mock — synthetic events\n");
+                run(JupiterV6MockSubstrate::default(), handler, sink, None).await
+            } else if cli.raydium || cli.all {
                 tracing::info!("Raydium CLMM mock — synthetic events\n");
                 run(RaydiumClmmMockSubstrate::default(), handler, sink, None).await
             } else {
@@ -212,6 +226,20 @@ impl Sink for StdoutSink {
                         cs.slot, &get("pool")[..8], &get("owner")[..8], get("liquidity"),
                     );
                 }
+                // ── Jupiter v6 ─────────────────────────────────────────────
+                "JupiterSwap" => {
+                    let src  = get("source_mint");
+                    let dst  = get("destination_mint");
+                    let src_str  = if src.len() >= 8 { &src[..8] } else { &src };
+                    let dst_str  = if dst.len() >= 8 { &dst[..8] } else { &dst };
+                    println!(
+                        "[slot {:>12}] [{step}] 🟡 JupSwap     user={}…  {src_str}…→{dst_str}…  in={:>12}  hops={}",
+                        cs.slot,
+                        &get("user")[..8],
+                        get("in_amount"),
+                        get("hops"),
+                    );
+                }
                 _ => {}
             }
         }
@@ -233,9 +261,15 @@ fn yellowstone_substrate(cli: &Cli) -> Result<YellowstoneSubstrate> {
     let token = std::env::var("YELLOWSTONE_TOKEN").ok();
 
     let programs = if cli.all {
-        vec![PUMPFUN_PROGRAM_ID.to_string(), RAYDIUM_CLMM_PROGRAM_ID.to_string()]
+        vec![
+            PUMPFUN_PROGRAM_ID.to_string(),
+            RAYDIUM_CLMM_PROGRAM_ID.to_string(),
+            JUPITER_V6_PROGRAM_ID.to_string(),
+        ]
     } else if cli.raydium {
         vec![RAYDIUM_CLMM_PROGRAM_ID.to_string()]
+    } else if cli.jupiter {
+        vec![JUPITER_V6_PROGRAM_ID.to_string()]
     } else {
         vec![PUMPFUN_PROGRAM_ID.to_string()]
     };
