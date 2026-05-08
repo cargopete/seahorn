@@ -21,7 +21,7 @@ Seahorn is a new indexing primitive — not a subgraph, not a Substreams module.
 
 - **Not a subgraph runtime.** No graph-node, no AssemblyScript ABI, no entity store, no GraphQL server (yet).
 - **Not Substreams.** No pure-compute constraint, no protobuf-everywhere, no segment-parallel backfill.
-- **Not multi-tenant in v0.5.** Self-host this scaffold against your own program. Multi-tenancy and Horizon integration are v1/v2.
+- **Not multi-tenant in v0.5.** Self-host this scaffold against your own program. Multi-tenancy is v1/v2.
 
 ---
 
