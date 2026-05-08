@@ -3,6 +3,7 @@ use clap::Parser;
 use futures::StreamExt;
 use seahorn_core::{ChangeSet, Cursor, EntityChange, Handler, Sink, Step, Substrate, SubstrateEvent, Value};
 use seahorn_handler_pumpfun::{PumpfunHandler, PUMPFUN_PROGRAM_ID};
+use seahorn_sink_postgres::PostgresSink;
 use seahorn_substrate_mock::PumpfunMockSubstrate;
 use tonic::{
     transport::{Channel, ClientTlsConfig},
@@ -19,6 +20,10 @@ struct Cli {
     /// Use synthetic Pump.fun data instead of a live Yellowstone endpoint
     #[arg(long)]
     mock: bool,
+
+    /// Write to Postgres instead of stdout (reads DATABASE_URL from env)
+    #[arg(long)]
+    postgres: bool,
 }
 
 // ── Runtime loop ──────────────────────────────────────────────────────────────
@@ -55,14 +60,29 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let handler = PumpfunHandler;
-    let sink = StdoutSink;
 
-    if cli.mock {
-        tracing::info!("Mock substrate — synthetic Pump.fun events");
-        tracing::info!("(set YELLOWSTONE_ENDPOINT in .env to switch to live data)\n");
-        run(PumpfunMockSubstrate::default(), handler, sink).await
+    if cli.postgres {
+        let db_url = std::env::var("DATABASE_URL")
+            .context("DATABASE_URL not set — required for --postgres")?;
+        let sink = PostgresSink::connect(&db_url).await?;
+
+        if cli.mock {
+            tracing::info!("Mock substrate → PostgresSink");
+            run(PumpfunMockSubstrate::default(), handler, sink).await
+        } else {
+            tracing::info!("Yellowstone substrate → PostgresSink");
+            run(yellowstone_substrate()?, handler, sink).await
+        }
     } else {
-        run(yellowstone_substrate()?, handler, sink).await
+        let sink = StdoutSink;
+
+        if cli.mock {
+            tracing::info!("Mock substrate — synthetic Pump.fun events");
+            tracing::info!("(set YELLOWSTONE_ENDPOINT in .env to switch to live data)\n");
+            run(PumpfunMockSubstrate::default(), handler, sink).await
+        } else {
+            run(yellowstone_substrate()?, handler, sink).await
+        }
     }
 }
 

@@ -1,0 +1,12 @@
+[package]
+name = "seahorn-sink-postgres"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+seahorn-core = { path = "../seahorn-core" }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+serde_json = "1"
+bs58 = "0.5.1"
+anyhow = "1"
+tracing = "0.1"
