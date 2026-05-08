@@ -61,12 +61,15 @@ The `Handler → ChangeSet` split is non-negotiable. It is what makes handlers d
 | `StdoutSink` (in runtime) | ✅ | Pretty-prints each `ChangeSet` to terminal |
 | Yellowstone gRPC substrate (in runtime) | ✅ | Live data via any Yellowstone endpoint, multi-program filter |
 | Docker Compose | ✅ | `postgres` + `postgrest` — REST API at `localhost:3000` |
+| `SolanaDataService.sol` | ✅ | Horizon DataService contract — provider registration, per-program startService, TAP v2 collect |
+| `seahorn-gateway` | ✅ | Axum payment gateway in front of PostgREST — TAP receipt validation, RAV aggregation, on-chain collection |
 
 ### What comes next
 
 | Step | What it delivers |
 |---|---|
-| Horizon integration | `SolanaDataService.sol` + `seahorn-gateway` — TAP v2 payments, GRT settlement, provider registration |
+| Deploy `SolanaDataService.sol` | Register on Arbitrum One; provision GRT stake via HorizonStaking |
+| Horizon network registration | Indexer-agent wires the gateway into The Graph's payment network |
 | More programs | Orca Whirlpools, Drift, Marginfi via the same `Handler` trait |
 
 ---
@@ -121,19 +124,40 @@ cp .env.example .env
 cargo run -- --postgres
 ```
 
+### Gateway (Horizon / TAP payments)
+
+The gateway sits in front of PostgREST and requires a valid TAP v2 receipt on every request.
+
+```bash
+# 1. Create gateway.toml (see crates/seahorn-gateway/gateway.example.toml)
+cp crates/seahorn-gateway/gateway.example.toml gateway.toml
+# Edit: data_service_address, service_provider_address, operator_private_key, authorized_senders
+
+# 2. Run (reads DATABASE_URL from gateway.toml, proxies to postgrest_url)
+cargo run -p seahorn-gateway
+
+# 3. Query with a TAP receipt header
+curl 'http://localhost:8080/buys?order=slot.desc&limit=10' \
+  -H 'TAP-Receipt: {"receipt":{...},"signature":"0x..."}'
+```
+
 ---
 
 ## Workspace layout
 
 ```
 seahorn/
+├── contracts/
+│   ├── SolanaDataService.sol              # Horizon DataService — provider registration + TAP collect
+│   └── interfaces/ISolanaDataService.sol  # Interface
 ├── crates/
 │   ├── seahorn-core/              # Core traits, types, MultiHandler
 │   ├── seahorn-substrate-mock/    # Mock substrates (Pump.fun, Raydium CLMM, Jupiter v6)
 │   ├── seahorn-handler-pumpfun/   # Pump.fun decoder (Anchor + Borsh)
 │   ├── seahorn-handler-raydium/   # Raydium CLMM decoder (swap, position, liquidity)
 │   ├── seahorn-handler-jupiter/   # Jupiter v6 decoder (route_plan skip table)
-│   └── seahorn-sink-postgres/     # PostgresSink with cursor persistence + sweeper
+│   ├── seahorn-sink-postgres/     # PostgresSink with cursor persistence + sweeper
+│   └── seahorn-gateway/           # Axum TAP payment gateway (validate → persist → proxy → collect)
 ├── docker/
 │   ├── init.sql                   # PostgREST web_anon role
 │   └── views.sql                  # Typed views: buys, sells, creates
