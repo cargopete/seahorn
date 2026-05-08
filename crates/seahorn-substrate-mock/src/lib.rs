@@ -76,3 +76,6 @@ fn random_bytes(rng: &mut SmallRng, len: usize) -> Vec<u8> {
 
 pub mod pumpfun;
 pub use pumpfun::PumpfunMockSubstrate;
+
+pub mod raydium_clmm;
+pub use raydium_clmm::RaydiumClmmMockSubstrate;

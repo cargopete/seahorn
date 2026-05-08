@@ -5,6 +5,7 @@ members = [
     "crates/seahorn-substrate-mock",
     "crates/seahorn-handler-pumpfun",
     "crates/seahorn-sink-postgres",
+    "crates/seahorn-handler-raydium",
 ]
 
 [workspace.dependencies]
@@ -28,6 +29,7 @@ seahorn-core = { path = "crates/seahorn-core" }
 seahorn-substrate-mock = { path = "crates/seahorn-substrate-mock" }
 seahorn-handler-pumpfun = { path = "crates/seahorn-handler-pumpfun" }
 seahorn-sink-postgres = { path = "crates/seahorn-sink-postgres" }
+seahorn-handler-raydium = { path = "crates/seahorn-handler-raydium" }
 
 # Yellowstone (live substrate)
 yellowstone-grpc-proto = { version = "2", default-features = false }

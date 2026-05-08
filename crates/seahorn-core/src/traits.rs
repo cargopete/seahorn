@@ -23,6 +23,37 @@ pub trait Handler: Send + Sync {
     fn handle(&self, event: &SubstrateEvent) -> ChangeSet;
 }
 
+impl Handler for Box<dyn Handler> {
+    fn handle(&self, event: &SubstrateEvent) -> ChangeSet {
+        (**self).handle(event)
+    }
+}
+
+/// Runs multiple handlers against the same event and merges their ChangeSets.
+///
+/// Each handler filters by its own program_id and skips instructions it doesn't
+/// recognise — so wiring both `PumpfunHandler` and `RaydiumClmmHandler` into a
+/// `MultiHandler` is safe and correct.
+pub struct MultiHandler {
+    handlers: Vec<Box<dyn Handler>>,
+}
+
+impl MultiHandler {
+    pub fn new(handlers: Vec<Box<dyn Handler>>) -> Self {
+        Self { handlers }
+    }
+}
+
+impl Handler for MultiHandler {
+    fn handle(&self, event: &SubstrateEvent) -> ChangeSet {
+        let mut cs = ChangeSet::empty(event.slot, event.step, event.cursor.clone());
+        for h in &self.handlers {
+            cs.changes.extend(h.handle(event).changes);
+        }
+        cs
+    }
+}
+
 /// A sink that applies a `ChangeSet` to a storage backend.
 ///
 /// Implementations: `StdoutSink` (dev), `PostgresSink` (v1), `KafkaSink` (v2).

@@ -1,10 +1,14 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use futures::StreamExt;
-use seahorn_core::{ChangeSet, Cursor, EntityChange, Handler, Sink, Step, Substrate, SubstrateEvent, Value};
+use seahorn_core::{
+    ChangeSet, Cursor, EntityChange, Handler, MultiHandler, Sink, Step, Substrate, SubstrateEvent,
+    Value,
+};
 use seahorn_handler_pumpfun::{PumpfunHandler, PUMPFUN_PROGRAM_ID};
+use seahorn_handler_raydium::{RaydiumClmmHandler, RAYDIUM_CLMM_PROGRAM_ID};
 use seahorn_sink_postgres::PostgresSink;
-use seahorn_substrate_mock::PumpfunMockSubstrate;
+use seahorn_substrate_mock::{PumpfunMockSubstrate, RaydiumClmmMockSubstrate};
 use tonic::{
     transport::{Channel, ClientTlsConfig},
     Request,
@@ -17,13 +21,21 @@ use yellowstone_grpc_proto::prelude::{
 #[derive(Parser)]
 #[command(name = "seahorn", about = "Solana data service — Seahorn")]
 struct Cli {
-    /// Use synthetic Pump.fun data instead of a live Yellowstone endpoint
+    /// Use synthetic data instead of a live Yellowstone endpoint
     #[arg(long)]
     mock: bool,
 
     /// Write to Postgres instead of stdout (reads DATABASE_URL from env)
     #[arg(long)]
     postgres: bool,
+
+    /// Index Raydium CLMM instead of Pump.fun (use --all for both)
+    #[arg(long)]
+    raydium: bool,
+
+    /// Index both Pump.fun and Raydium CLMM simultaneously
+    #[arg(long)]
+    all: bool,
 }
 
 // ── Runtime loop ──────────────────────────────────────────────────────────────
@@ -59,7 +71,18 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let handler = PumpfunHandler;
+
+    // Build handler — single or multi
+    let handler: Box<dyn Handler> = if cli.all {
+        Box::new(MultiHandler::new(vec![
+            Box::new(PumpfunHandler),
+            Box::new(RaydiumClmmHandler),
+        ]))
+    } else if cli.raydium {
+        Box::new(RaydiumClmmHandler)
+    } else {
+        Box::new(PumpfunHandler)
+    };
 
     if cli.postgres {
         let db_url = std::env::var("DATABASE_URL")
@@ -80,21 +103,31 @@ async fn main() -> Result<()> {
         }
 
         if cli.mock {
-            tracing::info!("Mock substrate → PostgresSink");
-            run(PumpfunMockSubstrate::default(), handler, sink, from).await
+            if cli.raydium || cli.all {
+                tracing::info!("Raydium CLMM mock → PostgresSink");
+                run(RaydiumClmmMockSubstrate::default(), handler, sink, from).await
+            } else {
+                tracing::info!("Pump.fun mock → PostgresSink");
+                run(PumpfunMockSubstrate::default(), handler, sink, from).await
+            }
         } else {
             tracing::info!("Yellowstone substrate → PostgresSink");
-            run(yellowstone_substrate()?, handler, sink, from).await
+            run(yellowstone_substrate(&cli)?, handler, sink, from).await
         }
     } else {
         let sink = StdoutSink;
 
         if cli.mock {
-            tracing::info!("Mock substrate — synthetic Pump.fun events");
-            tracing::info!("(set YELLOWSTONE_ENDPOINT in .env to switch to live data)\n");
-            run(PumpfunMockSubstrate::default(), handler, sink, None).await
+            if cli.raydium || cli.all {
+                tracing::info!("Raydium CLMM mock — synthetic events\n");
+                run(RaydiumClmmMockSubstrate::default(), handler, sink, None).await
+            } else {
+                tracing::info!("Pump.fun mock — synthetic events");
+                tracing::info!("(set YELLOWSTONE_ENDPOINT in .env to switch to live data)\n");
+                run(PumpfunMockSubstrate::default(), handler, sink, None).await
+            }
         } else {
-            run(yellowstone_substrate()?, handler, sink, None).await
+            run(yellowstone_substrate(&cli)?, handler, sink, None).await
         }
     }
 }
@@ -112,52 +145,71 @@ impl Sink for StdoutSink {
         };
 
         for change in &cs.changes {
-            let EntityChange::Upsert { entity_type, id: _, fields } = change else {
-                continue;
-            };
+            let EntityChange::Upsert { entity_type, id: _, fields } = change else { continue };
 
             let get = |key: &str| -> String {
                 fields.iter()
                     .find(|(k, _)| *k == key)
                     .map(|(_, v)| match v {
                         Value::String(s) => s.clone(),
-                        Value::U64(n) => n.to_string(),
-                        _ => String::new(),
+                        Value::U64(n)    => n.to_string(),
+                        Value::I64(n)    => n.to_string(),
+                        Value::Bool(b)   => b.to_string(),
+                        _                => String::new(),
                     })
                     .unwrap_or_default()
             };
 
             match *entity_type {
+                // ── Pump.fun ───────────────────────────────────────────────
                 "Buy" => {
                     let sol = get("sol_cost").parse::<u64>().unwrap_or(0);
                     println!(
-                        "[slot {:>12}] [{step}] 🟢 Buy    mint={}…  user={}…  tokens={:>14}  sol={:.4}",
-                        cs.slot,
-                        &get("mint")[..8],
-                        &get("user")[..8],
-                        get("token_amount"),
-                        sol as f64 / 1_000_000_000.0,
+                        "[slot {:>12}] [{step}] 🟢 Buy         mint={}…  user={}…  tokens={:>14}  sol={:.4}",
+                        cs.slot, &get("mint")[..8], &get("user")[..8],
+                        get("token_amount"), sol as f64 / 1_000_000_000.0,
                     );
                 }
                 "Sell" => {
                     let sol = get("sol_output").parse::<u64>().unwrap_or(0);
                     println!(
-                        "[slot {:>12}] [{step}] 🔴 Sell   mint={}…  user={}…  tokens={:>14}  sol={:.4}",
-                        cs.slot,
-                        &get("mint")[..8],
-                        &get("user")[..8],
-                        get("token_amount"),
-                        sol as f64 / 1_000_000_000.0,
+                        "[slot {:>12}] [{step}] 🔴 Sell        mint={}…  user={}…  tokens={:>14}  sol={:.4}",
+                        cs.slot, &get("mint")[..8], &get("user")[..8],
+                        get("token_amount"), sol as f64 / 1_000_000_000.0,
                     );
                 }
                 "Create" => {
                     println!(
-                        "[slot {:>12}] [{step}] ✨ Create mint={}…  name={:12}  sym={}  creator={}…",
-                        cs.slot,
-                        &get("mint")[..8],
-                        get("name"),
-                        get("symbol"),
-                        &get("creator")[..8],
+                        "[slot {:>12}] [{step}] ✨ Create      mint={}…  name={:12}  sym={}  creator={}…",
+                        cs.slot, &get("mint")[..8], get("name"), get("symbol"), &get("creator")[..8],
+                    );
+                }
+                // ── Raydium CLMM ───────────────────────────────────────────
+                "RaydiumSwap" => {
+                    let amt = get("amount").parse::<u64>().unwrap_or(0);
+                    println!(
+                        "[slot {:>12}] [{step}] 🔵 RaySwap     pool={}…  user={}…  amount={:>14}  base_in={}",
+                        cs.slot, &get("pool")[..8], &get("user")[..8],
+                        amt, get("is_base_input"),
+                    );
+                }
+                "RaydiumPosition" => {
+                    println!(
+                        "[slot {:>12}] [{step}] 🟣 OpenPos     pool={}…  owner={}…  ticks=[{},{}]",
+                        cs.slot, &get("pool")[..8], &get("owner")[..8],
+                        get("tick_lower"), get("tick_upper"),
+                    );
+                }
+                "RaydiumAddLiquidity" => {
+                    println!(
+                        "[slot {:>12}] [{step}] ➕ AddLiq      pool={}…  owner={}…  liq={}",
+                        cs.slot, &get("pool")[..8], &get("owner")[..8], get("liquidity"),
+                    );
+                }
+                "RaydiumRemoveLiquidity" => {
+                    println!(
+                        "[slot {:>12}] [{step}] ➖ RemoveLiq   pool={}…  owner={}…  liq={}",
+                        cs.slot, &get("pool")[..8], &get("owner")[..8], get("liquidity"),
                     );
                 }
                 _ => {}
@@ -172,13 +224,23 @@ impl Sink for StdoutSink {
 struct YellowstoneSubstrate {
     endpoint: String,
     token: Option<String>,
+    programs: Vec<String>,
 }
 
-fn yellowstone_substrate() -> Result<YellowstoneSubstrate> {
+fn yellowstone_substrate(cli: &Cli) -> Result<YellowstoneSubstrate> {
     let endpoint = std::env::var("YELLOWSTONE_ENDPOINT")
         .context("YELLOWSTONE_ENDPOINT not set — use --mock for local dev")?;
     let token = std::env::var("YELLOWSTONE_TOKEN").ok();
-    Ok(YellowstoneSubstrate { endpoint, token })
+
+    let programs = if cli.all {
+        vec![PUMPFUN_PROGRAM_ID.to_string(), RAYDIUM_CLMM_PROGRAM_ID.to_string()]
+    } else if cli.raydium {
+        vec![RAYDIUM_CLMM_PROGRAM_ID.to_string()]
+    } else {
+        vec![PUMPFUN_PROGRAM_ID.to_string()]
+    };
+
+    Ok(YellowstoneSubstrate { endpoint, token, programs })
 }
 
 impl Substrate for YellowstoneSubstrate {
@@ -202,8 +264,8 @@ impl Substrate for YellowstoneSubstrate {
             });
 
             let mut filters = std::collections::HashMap::new();
-            filters.insert("pumpfun".to_string(), SubscribeRequestFilterTransactions {
-                account_include: vec![PUMPFUN_PROGRAM_ID.to_string()],
+            filters.insert("programs".to_string(), SubscribeRequestFilterTransactions {
+                account_include: self.programs.clone(),
                 vote: Some(false),
                 failed: Some(false),
                 ..Default::default()
@@ -220,7 +282,7 @@ impl Substrate for YellowstoneSubstrate {
                 Err(e) => { yield Err(e.into()); return; }
             };
 
-            tracing::info!("Yellowstone stream open — watching Pump.fun\n");
+            tracing::info!(programs = ?self.programs, "Yellowstone stream open");
 
             while let Some(msg) = stream.next().await {
                 let update = match msg {
