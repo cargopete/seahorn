@@ -3,6 +3,7 @@ use std::sync::Arc;
 use alloy_primitives::B256;
 use axum::{extract::State, http::StatusCode, routing::{any, get}, Router};
 use reqwest::Client;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 
 mod aggregator;
 mod collector;
@@ -69,12 +70,30 @@ async fn main() -> anyhow::Result<()> {
     aggregator::spawn(Arc::clone(&config), pool.clone());
     collector::spawn(Arc::clone(&config), pool.clone());
 
-    // Build Axum router — health probes first, then proxy catch-all.
+    // Build rate-limit governor — 1 token per (1000 / rps) ms, with burst.
+    let period_ms = 1_000u64 / config.rate_limit.requests_per_second.max(1) as u64;
+    let governor_conf = {
+        let mut b = GovernorConfigBuilder::default();
+        b.per_millisecond(period_ms)
+            .burst_size(config.rate_limit.burst_size);
+        Arc::new(b.finish().expect("invalid rate limit config"))
+    };
+    tracing::info!(
+        rps = config.rate_limit.requests_per_second,
+        burst = config.rate_limit.burst_size,
+        "rate limiter configured"
+    );
+
+    // Proxy routes are rate-limited; health probes are not.
+    let proxy_routes = Router::new()
+        .route("/{*path}", any(proxy::handler))
+        .route("/", any(proxy::handler))
+        .layer(GovernorLayer::new(Arc::clone(&governor_conf)));
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
-        .route("/{*path}", any(proxy::handler))
-        .route("/", any(proxy::handler))
+        .merge(proxy_routes)
         .with_state(state);
 
     let addr = format!("{}:{}", config.server.host, config.server.port);

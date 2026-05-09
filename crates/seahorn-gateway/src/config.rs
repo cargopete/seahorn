@@ -24,6 +24,8 @@ pub struct Config {
     pub backend: BackendConfig,
     pub database: DatabaseConfig,
     pub collector: Option<CollectorConfig>,
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -89,6 +91,22 @@ pub struct CollectorConfig {
     pub min_collect_value: u128,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct RateLimitConfig {
+    /// Number of requests per second allowed per IP address.
+    #[serde(default = "default_rps")]
+    pub requests_per_second: u32,
+    /// Additional burst capacity above the steady-state rate.
+    #[serde(default = "default_burst")]
+    pub burst_size: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self { requests_per_second: default_rps(), burst_size: default_burst() }
+    }
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
         let path = std::env::var("GATEWAY_CONFIG").unwrap_or_else(|_| "gateway.toml".to_string());
@@ -97,6 +115,9 @@ impl Config {
         toml::from_str(&contents).context("failed to parse config")
     }
 }
+
+fn default_rps() -> u32 { 20 }
+fn default_burst() -> u32 { 40 }
 
 fn default_host() -> String { "0.0.0.0".to_string() }
 fn default_port() -> u16 { 8080 }

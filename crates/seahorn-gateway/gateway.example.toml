@@ -36,3 +36,8 @@ url = "postgres://postgres:postgres@localhost:5432/seahorn"
 # arbitrum_rpc_url = "https://arb1.arbitrum.io/rpc"
 # collect_interval_secs = 3600
 # min_collect_value = 0  # GRT wei — 0 means collect everything
+
+# Rate limiting — requests per second per IP (defaults shown)
+# [rate_limit]
+# requests_per_second = 20
+# burst_size = 40

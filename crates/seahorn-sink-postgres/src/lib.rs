@@ -5,45 +5,23 @@ use seahorn_core::{ChangeSet, Cursor, EntityChange, Sink, Step, Value};
 use serde_json::{Map, Value as Json};
 use sqlx::{PgPool, Row};
 
-const SCHEMA_SQL: &str = r#"
-CREATE TABLE IF NOT EXISTS entity_changes (
-    id               BIGSERIAL PRIMARY KEY,
-    entity_type      TEXT        NOT NULL,
-    entity_id        TEXT        NOT NULL,
-    slot             BIGINT      NOT NULL,
-    tx_signature     TEXT,
-    commitment_status TEXT       NOT NULL,
-    fields           JSONB,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_ec_type_slot ON entity_changes (entity_type, slot);
-CREATE INDEX IF NOT EXISTS idx_ec_slot      ON entity_changes (slot);
-CREATE INDEX IF NOT EXISTS idx_ec_status    ON entity_changes (commitment_status);
-
-CREATE TABLE IF NOT EXISTS cursors (
-    name         TEXT PRIMARY KEY,
-    cursor_bytes BYTEA NOT NULL,
-    slot         BIGINT NOT NULL,
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"#;
-
 pub struct PostgresSink {
     pool: PgPool,
+    cursor_name: String,
 }
 
 impl PostgresSink {
-    pub async fn connect(database_url: &str) -> Result<Self> {
+    pub async fn connect(database_url: &str, cursor_name: impl Into<String>) -> Result<Self> {
         let pool = PgPool::connect(database_url).await?;
-        sqlx::query(SCHEMA_SQL).execute(&pool).await?;
-        tracing::info!("PostgresSink ready — schema ensured");
-        Ok(Self { pool })
+        sqlx::migrate!().run(&pool).await?;
+        tracing::info!("PostgresSink ready — migrations applied");
+        Ok(Self { pool, cursor_name: cursor_name.into() })
     }
 
     /// Returns the last persisted cursor, or `None` if this is a fresh start.
     pub async fn load_cursor(&self) -> Result<Option<Cursor>> {
-        let row = sqlx::query("SELECT cursor_bytes FROM cursors WHERE name = 'default'")
+        let row = sqlx::query("SELECT cursor_bytes FROM cursors WHERE name = $1")
+            .bind(&self.cursor_name)
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|r| {
@@ -124,7 +102,7 @@ impl Sink for PostgresSink {
                     }
                 }
 
-                upsert_cursor(&mut txn, &cs.cursor, cs.slot).await?;
+                upsert_cursor(&mut txn, &self.cursor_name, &cs.cursor, cs.slot).await?;
                 txn.commit().await?;
                 tracing::debug!(slot = cs.slot, status, changes = cs.changes.len(), "applied changeset");
             }
@@ -142,7 +120,7 @@ impl Sink for PostgresSink {
                 .await?
                 .rows_affected();
 
-                upsert_cursor(&mut txn, &cs.cursor, cs.slot).await?;
+                upsert_cursor(&mut txn, &self.cursor_name, &cs.cursor, cs.slot).await?;
                 txn.commit().await?;
                 tracing::debug!(slot = cs.slot, rows, "finalized slot");
             }
@@ -187,13 +165,15 @@ async fn promote_to_final(pool: &PgPool, finalized_slot: u64) -> Result<u64> {
 
 async fn upsert_cursor(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    name: &str,
     cursor: &Cursor,
     slot: u64,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO cursors (name, cursor_bytes, slot) VALUES ('default', $1, $2)
-         ON CONFLICT (name) DO UPDATE SET cursor_bytes = $1, slot = $2, updated_at = now()",
+        "INSERT INTO cursors (name, cursor_bytes, slot) VALUES ($1, $2, $3)
+         ON CONFLICT (name) DO UPDATE SET cursor_bytes = $2, slot = $3, updated_at = now()",
     )
+    .bind(name)
     .bind(&cursor.0)
     .bind(slot as i64)
     .execute(&mut **txn)

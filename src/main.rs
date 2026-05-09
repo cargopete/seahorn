@@ -46,6 +46,10 @@ struct Cli {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn cursor_name(cli: &Cli) -> &'static str {
+    if cli.all { "all" } else if cli.raydium { "raydium" } else if cli.jupiter { "jupiter" } else { "pumpfun" }
+}
+
 fn log_cursor(from: &Option<Cursor>) {
     if let Some(c) = from {
         let slot = u64::from_le_bytes(c.0.as_slice().try_into().unwrap_or([0u8; 8]));
@@ -105,7 +109,7 @@ async fn main() -> Result<()> {
     if cli.postgres {
         let db_url = std::env::var("DATABASE_URL")
             .context("DATABASE_URL not set — required for --postgres")?;
-        let sink = PostgresSink::connect(&db_url).await?;
+        let sink = PostgresSink::connect(&db_url, cursor_name(&cli)).await?;
 
         if let Ok(rpc_url) = std::env::var("SOLANA_RPC_URL") {
             tracing::info!("finalization sweeper active");
