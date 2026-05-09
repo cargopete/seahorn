@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use alloy_primitives::B256;
-use axum::{routing::any, Router};
+use axum::{extract::State, http::StatusCode, routing::{any, get}, Router};
 use reqwest::Client;
 
 mod aggregator;
@@ -69,8 +69,10 @@ async fn main() -> anyhow::Result<()> {
     aggregator::spawn(Arc::clone(&config), pool.clone());
     collector::spawn(Arc::clone(&config), pool.clone());
 
-    // Build Axum router — all paths go through the proxy handler.
+    // Build Axum router — health probes first, then proxy catch-all.
     let app = Router::new()
+        .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/{*path}", any(proxy::handler))
         .route("/", any(proxy::handler))
         .with_state(state);
@@ -82,4 +84,15 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn health() -> StatusCode {
+    StatusCode::OK
+}
+
+async fn ready(State(state): State<AppState>) -> StatusCode {
+    match sqlx::query("SELECT 1").execute(&state.pool).await {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+    }
 }

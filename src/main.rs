@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::time::Duration;
 use clap::Parser;
 use futures::StreamExt;
 use seahorn_core::{
@@ -9,7 +10,7 @@ use seahorn_handler_pumpfun::{PumpfunHandler, PUMPFUN_PROGRAM_ID};
 use seahorn_handler_jupiter::{JupiterV6Handler, JUPITER_V6_PROGRAM_ID};
 use seahorn_handler_raydium::{RaydiumClmmHandler, RAYDIUM_CLMM_PROGRAM_ID};
 use seahorn_sink_postgres::PostgresSink;
-use seahorn_substrate_mock::{JupiterV6MockSubstrate, PumpfunMockSubstrate, RaydiumClmmMockSubstrate};
+use seahorn_substrate_mock::{AllProgramsMockSubstrate, JupiterV6MockSubstrate, PumpfunMockSubstrate, RaydiumClmmMockSubstrate};
 use tonic::{
     transport::{Channel, ClientTlsConfig},
     Request,
@@ -41,6 +42,15 @@ struct Cli {
     /// Index all programs simultaneously (Pump.fun + Raydium CLMM + Jupiter v6)
     #[arg(long)]
     all: bool,
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn log_cursor(from: &Option<Cursor>) {
+    if let Some(c) = from {
+        let slot = u64::from_le_bytes(c.0.as_slice().try_into().unwrap_or([0u8; 8]));
+        tracing::info!(slot, "resuming from persisted cursor");
+    }
 }
 
 // ── Runtime loop ──────────────────────────────────────────────────────────────
@@ -96,7 +106,6 @@ async fn main() -> Result<()> {
         let db_url = std::env::var("DATABASE_URL")
             .context("DATABASE_URL not set — required for --postgres")?;
         let sink = PostgresSink::connect(&db_url).await?;
-        let from = sink.load_cursor().await?;
 
         if let Ok(rpc_url) = std::env::var("SOLANA_RPC_URL") {
             tracing::info!("finalization sweeper active");
@@ -105,25 +114,38 @@ async fn main() -> Result<()> {
             tracing::info!("SOLANA_RPC_URL not set — finalization sweeper disabled");
         }
 
-        if let Some(ref c) = from {
-            let slot = u64::from_le_bytes(c.0.clone().try_into().unwrap_or([0u8; 8]));
-            tracing::info!(slot, "resuming from persisted cursor");
-        }
-
         if cli.mock {
+            let from = sink.load_cursor().await?;
+            log_cursor(&from);
             if cli.jupiter {
                 tracing::info!("Jupiter v6 mock → PostgresSink");
-                run(JupiterV6MockSubstrate::default(), handler, sink, from).await
-            } else if cli.raydium || cli.all {
+                run(JupiterV6MockSubstrate::default(), &handler, &sink, from).await
+            } else if cli.all {
+                tracing::info!("all programs mock → PostgresSink");
+                run(AllProgramsMockSubstrate::default(), &handler, &sink, from).await
+            } else if cli.raydium {
                 tracing::info!("Raydium CLMM mock → PostgresSink");
-                run(RaydiumClmmMockSubstrate::default(), handler, sink, from).await
+                run(RaydiumClmmMockSubstrate::default(), &handler, &sink, from).await
             } else {
                 tracing::info!("Pump.fun mock → PostgresSink");
-                run(PumpfunMockSubstrate::default(), handler, sink, from).await
+                run(PumpfunMockSubstrate::default(), &handler, &sink, from).await
             }
         } else {
+            // Yellowstone: reconnect with exponential backoff, reload cursor on each attempt.
             tracing::info!("Yellowstone substrate → PostgresSink");
-            run(yellowstone_substrate(&cli)?, handler, sink, from).await
+            let mut backoff = Duration::from_secs(1);
+            loop {
+                let from = sink.load_cursor().await?;
+                log_cursor(&from);
+                match run(yellowstone_substrate(&cli)?, &handler, &sink, from).await {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        tracing::warn!(error = %e, next_retry_secs = backoff.as_secs(), "stream error — reconnecting");
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(Duration::from_secs(60));
+                    }
+                }
+            }
         }
     } else {
         let sink = StdoutSink;
@@ -132,7 +154,10 @@ async fn main() -> Result<()> {
             if cli.jupiter {
                 tracing::info!("Jupiter v6 mock — synthetic events\n");
                 run(JupiterV6MockSubstrate::default(), handler, sink, None).await
-            } else if cli.raydium || cli.all {
+            } else if cli.all {
+                tracing::info!("all programs mock — synthetic events\n");
+                run(AllProgramsMockSubstrate::default(), handler, sink, None).await
+            } else if cli.raydium {
                 tracing::info!("Raydium CLMM mock — synthetic events\n");
                 run(RaydiumClmmMockSubstrate::default(), handler, sink, None).await
             } else {
@@ -280,8 +305,14 @@ fn yellowstone_substrate(cli: &Cli) -> Result<YellowstoneSubstrate> {
 impl Substrate for YellowstoneSubstrate {
     fn stream(
         &self,
-        _from: Option<Cursor>,
+        from: Option<Cursor>,
     ) -> impl futures::Stream<Item = Result<SubstrateEvent>> + Send + '_ {
+        // Yellowstone v2 proto has no from_slot field — we filter locally to skip
+        // any slots already written before a crash/reconnect.
+        let from_slot: Option<u64> = from
+            .as_ref()
+            .and_then(|c| c.0.as_slice().try_into().ok().map(u64::from_le_bytes));
+
         async_stream::stream! {
             let tls = ClientTlsConfig::new().with_native_roots();
             let channel = Channel::from_shared(self.endpoint.clone())
@@ -316,7 +347,7 @@ impl Substrate for YellowstoneSubstrate {
                 Err(e) => { yield Err(e.into()); return; }
             };
 
-            tracing::info!(programs = ?self.programs, "Yellowstone stream open");
+            tracing::info!(programs = ?self.programs, from_slot = ?from_slot, "Yellowstone stream open");
 
             while let Some(msg) = stream.next().await {
                 let update = match msg {
@@ -330,6 +361,12 @@ impl Substrate for YellowstoneSubstrate {
                 let Some(msg) = tx.message else { continue };
 
                 let slot = tx_update.slot;
+
+                // Skip slots already processed on a previous run.
+                if from_slot.map_or(false, |min| slot <= min) {
+                    continue;
+                }
+
                 let account_keys: Vec<Vec<u8>> = msg.account_keys.clone();
 
                 let instructions = msg.instructions.iter().map(|ix| {

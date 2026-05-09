@@ -82,3 +82,6 @@ pub use raydium_clmm::RaydiumClmmMockSubstrate;
 
 pub mod jupiter;
 pub use jupiter::JupiterV6MockSubstrate;
+
+pub mod multi;
+pub use multi::AllProgramsMockSubstrate;

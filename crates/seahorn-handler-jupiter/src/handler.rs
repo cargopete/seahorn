@@ -134,3 +134,63 @@ fn swap_fields(
     }
     fields
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use seahorn_core::{Cursor, Step};
+    use sha2::{Digest, Sha256};
+
+    fn anchor_disc(name: &str) -> [u8; 8] {
+        let mut h = Sha256::new();
+        h.update(format!("global:{name}"));
+        h.finalize()[..8].try_into().unwrap()
+    }
+
+    fn dummy_pubkey(n: u8) -> Vec<u8> { vec![n; 32] }
+
+    fn make_event(disc: [u8; 8], extra: Vec<u8>, accounts: Vec<Vec<u8>>) -> SubstrateEvent {
+        let program_id = JUPITER_V6_PROGRAM_ID_BYTES.to_vec();
+        let mut data = disc.to_vec();
+        data.extend(extra);
+        SubstrateEvent {
+            slot: 1,
+            signature: vec![0u8; 64],
+            step: Step::New,
+            cursor: Cursor(1u64.to_le_bytes().to_vec()),
+            instructions: vec![RawInstruction { program_id, data, accounts }],
+        }
+    }
+
+    /// Build a minimal shared_accounts_route payload with zero hops.
+    ///
+    /// Layout after discriminator:
+    ///   id(1) route_plan_len(4=0) in_amount(8) quoted_out(8) slippage_bps(2) fee_bps(1)
+    fn shared_route_args() -> Vec<u8> {
+        let mut v = vec![0u8]; // id
+        v.extend_from_slice(&0u32.to_le_bytes()); // route_plan: 0 hops
+        v.extend_from_slice(&1_000_000u64.to_le_bytes()); // in_amount
+        v.extend_from_slice(&990_000u64.to_le_bytes());   // quoted_out_amount
+        v.extend_from_slice(&50u16.to_le_bytes());        // slippage_bps
+        v.push(0u8);                                       // platform_fee_bps
+        v
+    }
+
+    #[test]
+    fn shared_accounts_route_produces_upsert() {
+        let disc = anchor_disc("shared_accounts_route");
+        // need at least 9 accounts (indices 0-8)
+        let accounts: Vec<Vec<u8>> = (0..9).map(|i| dummy_pubkey(i)).collect();
+        let cs = JupiterV6Handler.handle(&make_event(disc, shared_route_args(), accounts));
+        assert_eq!(cs.changes.len(), 1);
+        assert!(matches!(&cs.changes[0], EntityChange::Upsert { entity_type: "JupiterSwap", .. }));
+    }
+
+    #[test]
+    fn unknown_discriminator_returns_empty() {
+        let disc = [0xaa, 0xbb, 0xcc, 0xdd, 0x00, 0x01, 0x02, 0x03];
+        let accounts: Vec<Vec<u8>> = (0..9).map(|i| dummy_pubkey(i)).collect();
+        let cs = JupiterV6Handler.handle(&make_event(disc, vec![0u8; 24], accounts));
+        assert!(cs.is_empty());
+    }
+}

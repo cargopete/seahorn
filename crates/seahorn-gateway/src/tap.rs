@@ -143,6 +143,157 @@ pub fn collection_id(payer: Address, service_provider: Address, data_service: Ad
     keccak256(&encoded)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k256::ecdsa::SigningKey;
+
+    /// Derive the Ethereum address from a signing key.
+    fn eth_address(sk: &SigningKey) -> Address {
+        let vk = sk.verifying_key();
+        let encoded = vk.to_encoded_point(false);
+        let hash = keccak256(&encoded.as_bytes()[1..]);
+        Address::from_slice(&hash[12..])
+    }
+
+    /// Sign a prehash and return a 65-byte hex string (r || s || v).
+    fn sign_hex(sk: &SigningKey, hash: B256) -> String {
+        let (sig, rec_id) = sk.sign_prehash_recoverable(hash.as_slice()).unwrap();
+        let mut bytes = [0u8; 65];
+        bytes[..64].copy_from_slice(&sig.to_bytes());
+        bytes[64] = rec_id.to_byte();
+        format!("0x{}", hex::encode(bytes))
+    }
+
+    fn test_sk() -> SigningKey {
+        SigningKey::from_slice(&[1u8; 32]).unwrap()
+    }
+
+    fn test_domain_sep() -> B256 {
+        domain_separator(
+            "TAPVerifier",
+            421614, // Arbitrum Sepolia
+            Address::from_slice(&[0xAB; 20]),
+        )
+    }
+
+    #[test]
+    fn domain_separator_is_deterministic() {
+        let a = domain_separator("Test", 1, Address::ZERO);
+        let b = domain_separator("Test", 1, Address::ZERO);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn domain_separator_changes_with_chain_id() {
+        let a = domain_separator("Test", 1, Address::ZERO);
+        let b = domain_separator("Test", 2, Address::ZERO);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn recover_signer_round_trip() {
+        let sk = test_sk();
+        let expected_addr = eth_address(&sk);
+        let hash = B256::from([0x42u8; 32]);
+        let sig_hex = sign_hex(&sk, hash);
+        let recovered = recover_signer(hash, &sig_hex).unwrap();
+        assert_eq!(recovered, expected_addr);
+    }
+
+    #[test]
+    fn validate_receipt_accepts_valid() {
+        let sk = test_sk();
+        let data_service = Address::from_slice(&[0x01; 20]);
+        let service_provider = Address::from_slice(&[0x02; 20]);
+        let dom = domain_separator("TAPVerifier", 421614, Address::from_slice(&[0xAB; 20]));
+        let signer = eth_address(&sk);
+
+        let receipt = Receipt {
+            data_service,
+            service_provider,
+            timestamp_ns: 1_000_000_000,
+            nonce: 42,
+            value: 100,
+            metadata: Bytes::default(),
+        };
+
+        let msg_hash = eip712_hash(dom, &receipt);
+        let sig_hex = sign_hex(&sk, msg_hash);
+
+        let header = serde_json::to_string(&SignedReceipt {
+            receipt: receipt.clone(),
+            signature: sig_hex,
+        })
+        .unwrap();
+
+        let result = validate_receipt(
+            &header,
+            dom,
+            &[signer],
+            data_service,
+            service_provider,
+            60_000_000_000, // 60s max age
+            1_000_000_000,  // now_ns == timestamp_ns (not expired)
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_receipt_rejects_wrong_data_service() {
+        let sk = test_sk();
+        let data_service = Address::from_slice(&[0x01; 20]);
+        let wrong_service = Address::from_slice(&[0xFF; 20]);
+        let service_provider = Address::from_slice(&[0x02; 20]);
+        let dom = test_domain_sep();
+
+        let receipt = Receipt {
+            data_service: wrong_service,
+            service_provider,
+            timestamp_ns: 1_000_000_000,
+            nonce: 1,
+            value: 1,
+            metadata: Bytes::default(),
+        };
+        let msg_hash = eip712_hash(dom, &receipt);
+        let sig_hex = sign_hex(&sk, msg_hash);
+        let header = serde_json::to_string(&SignedReceipt { receipt, signature: sig_hex }).unwrap();
+
+        let err = validate_receipt(
+            &header, dom, &[], data_service, service_provider,
+            u64::MAX, 1_000_000_000,
+        );
+        assert!(matches!(err, Err(TapError::InvalidReceipt(_))));
+    }
+
+    #[test]
+    fn validate_receipt_rejects_expired() {
+        let sk = test_sk();
+        let data_service = Address::from_slice(&[0x01; 20]);
+        let service_provider = Address::from_slice(&[0x02; 20]);
+        let dom = test_domain_sep();
+
+        let receipt = Receipt {
+            data_service,
+            service_provider,
+            timestamp_ns: 1_000,
+            nonce: 2,
+            value: 1,
+            metadata: Bytes::default(),
+        };
+        let msg_hash = eip712_hash(dom, &receipt);
+        let sig_hex = sign_hex(&sk, msg_hash);
+        let header = serde_json::to_string(&SignedReceipt { receipt, signature: sig_hex }).unwrap();
+
+        let err = validate_receipt(
+            &header, dom, &[], data_service, service_provider,
+            1_000, // max_age_ns = 1000ns
+            1_000_000_000, // now_ns >> timestamp_ns + max_age
+        );
+        assert!(matches!(err, Err(TapError::ReceiptExpired)));
+    }
+}
+
 // ── Validation ────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]

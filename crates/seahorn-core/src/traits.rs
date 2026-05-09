@@ -29,6 +29,12 @@ impl Handler for Box<dyn Handler> {
     }
 }
 
+impl<H: Handler> Handler for &H {
+    fn handle(&self, event: &SubstrateEvent) -> ChangeSet {
+        (*self).handle(event)
+    }
+}
+
 /// Runs multiple handlers against the same event and merges their ChangeSets.
 ///
 /// Each handler filters by its own program_id and skips instructions it doesn't
@@ -60,4 +66,10 @@ impl Handler for MultiHandler {
 /// The sink owns all I/O — handlers never touch storage directly.
 pub trait Sink: Send + Sync {
     fn apply(&self, changeset: &ChangeSet) -> impl std::future::Future<Output = Result<()>> + Send;
+}
+
+impl<K: Sink> Sink for &K {
+    fn apply(&self, changeset: &ChangeSet) -> impl std::future::Future<Output = Result<()>> + Send {
+        (*self).apply(changeset)
+    }
 }

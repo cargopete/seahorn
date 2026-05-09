@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS tap_receipts (
 );
 CREATE INDEX IF NOT EXISTS tap_receipts_payer_idx ON tap_receipts (payer_address);
 CREATE INDEX IF NOT EXISTS tap_receipts_ts_idx    ON tap_receipts (timestamp_ns);
+-- Prevent replay: each (signer, nonce) pair may only be used once.
+CREATE UNIQUE INDEX IF NOT EXISTS tap_receipts_nonce_idx ON tap_receipts (signer_address, nonce);
 
 CREATE TABLE IF NOT EXISTS tap_ravs (
     collection_id    TEXT    PRIMARY KEY,

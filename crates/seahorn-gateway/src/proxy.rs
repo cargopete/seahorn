@@ -10,6 +10,7 @@ use axum::{
     http::{Request, StatusCode},
     response::Response,
 };
+use sqlx;
 
 use crate::{db, tap, AppState};
 
@@ -44,10 +45,14 @@ pub async fn handler(
     )
     .map_err(|e| (StatusCode::PAYMENT_REQUIRED, e.to_string()))?;
 
-    // ── 3. Persist receipt ────────────────────────────────────────────────────
-    db::insert_receipt(&state.pool, &validated)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // ── 3. Persist receipt (reject replayed nonces) ───────────────────────────
+    match db::insert_receipt(&state.pool, &validated).await {
+        Ok(()) => {}
+        Err(e) if is_duplicate_nonce(&e) => {
+            return Err((StatusCode::PAYMENT_REQUIRED, "receipt nonce already used".into()));
+        }
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
 
     // ── 4. Proxy to PostgREST ─────────────────────────────────────────────────
     let path_and_query = req
@@ -106,4 +111,12 @@ pub async fn handler(
         .header("content-type", content_type)
         .body(Body::from(resp_bytes))
         .unwrap())
+}
+
+/// Returns true if the error is a Postgres unique-constraint violation (SQLSTATE 23505).
+fn is_duplicate_nonce(e: &anyhow::Error) -> bool {
+    if let Some(sqlx::Error::Database(db_err)) = e.downcast_ref::<sqlx::Error>() {
+        return db_err.code().as_deref() == Some("23505");
+    }
+    false
 }
