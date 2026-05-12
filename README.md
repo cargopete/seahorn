@@ -1,189 +1,213 @@
 # Seahorn
 
-**A Solana data service for The Graph Protocol.**
+**Solana structured data service on The Graph Protocol's Horizon payment network.**
 
-Seahorn is a new indexing primitive — not a subgraph, not a Substreams module. It is a standalone Rust service that ingests Solana on-chain data, runs typed handler functions against it, and writes structured output to a sink. The third lane alongside Subgraphs (EVM) and Substreams (pure-compute).
-
----
-
-## What it aims to deliver
-
-- **Live Solana data on The Graph** — surfacing Solana program activity (instructions, account diffs) as queryable, structured data, eventually served through The Graph's Horizon protocol.
-- **Rust-native DX** — handlers are plain Rust functions. No AssemblyScript, no protobuf IDL, no segment boundaries. You write `fn handle(event: &SubstrateEvent) -> ChangeSet` and the runtime does the rest.
-- **Typed decoders for real programs** — Anchor discriminators + Borsh decode → typed Rust instruction structs. Pump.fun, Raydium, Jupiter, Drift — decoded without boilerplate.
-- **Pluggable substrates** — Firehose-Solana or Yellowstone gRPC behind a unified `Substrate` trait. Swap substrates without touching handler code.
-- **Pluggable sinks** — `StdoutSink` for dev, `PostgresSink` for v1, Kafka/ClickHouse later. The handler never touches storage directly.
-- **Correct fork handling** — append-only writes with commitment markers (`NEW` / `UNDO` / `FINAL`), finalization sweeper, cursor persistence. No silent state drift on reorgs.
+Seahorn indexes Solana program activity into typed, fork-correct, queryable entities and gates access via TAP v2 micropayments. It is the missing third lane alongside Subgraphs (EVM entities) and Substreams (pure-compute transforms): a Rust-native service that turns raw Solana instructions into structured data, served over a REST API and paid for per-query in GRT.
 
 ---
 
-## What it is not
+## Deployment
 
-- **Not a subgraph runtime.** No graph-node, no AssemblyScript ABI, no entity store, no GraphQL server (yet).
-- **Not Substreams.** No pure-compute constraint, no protobuf-everywhere, no segment-parallel backfill.
-- **Not multi-tenant in v0.5.** Self-host this scaffold against your own program. Multi-tenancy is v1/v2.
+### SolanaDataService.sol — Arbitrum One (mainnet)
+
+| | |
+|---|---|
+| **Proxy** | `0xdDE3F913cb6D1332Bc018Eb63647020a87dD7B37` |
+| **Implementation** | `0x745af998718A64c1007a3D96b21cEE021CfB7599` |
+| **Owner** | `0x20E59D8F41c9233B2108B10657aF5B2F8B7689A1` |
+| **Horizon Controller** | `0x0a8491544221dd212964fbb96487467291b2C97e` |
+| **GraphTallyCollector** | `0x8f69F5C07477Ac46FBc491B1E6D91E2bb0111A9e` |
+| **Fee: burn** | 1% per collect() |
+| **Fee: data service** | 1% per collect() |
+| **Min provision** | 555 GRT |
+| **Programs allowlisted** | Pump.fun · Raydium CLMM · Jupiter v6 |
+
+### Status
+
+| Component | Status |
+|---|---|
+| `SolanaDataService.sol` on Arbitrum One | **Live** |
+| Foundry tests (37 tests) | **Passing** |
+| Rust handlers: Pump.fun, Raydium CLMM, Jupiter v6 | **Working** |
+| PostgresSink (fork-correct, cursor resume, finalization sweeper) | **Working** |
+| seahorn-gateway (TAP v2 validation, RAV aggregation, rate limiting) | **Working** |
+| PostgresSink integration tests (testcontainers) | **Written — need Docker** |
+| Provider registration (stake GRT + call register/startService) | **TODO** |
+| Live Yellowstone → Postgres → PostgREST end-to-end | **TODO** |
+| First paid query on mainnet | **TODO** |
 
 ---
 
 ## Architecture
 
 ```
-Substrate  (Firehose-Solana / Yellowstone gRPC / Mock)
+Yellowstone gRPC  (confirmed Solana transactions)
     │
     │  SubstrateEvent { slot, signature, step, cursor, instructions }
     ▼
-Handler  (pure Rust fn — no I/O, deterministic)
+Handler  (pure Rust — deterministic, no I/O)
     │
     │  ChangeSet { slot, step, cursor, changes: Vec<EntityChange> }
     ▼
-Sink  (StdoutSink / PostgresSink)
-    │
-    ├─ INSERT entity_changes (commitment_status = NEW | UNDO)
-    ├─ UPSERT cursors  ← atomic with entity writes
-    └─ Sweeper task: getSlot(finalized) → UPDATE status = FINAL
+PostgresSink
+    ├─ INSERT entity_changes  (commitment_status = NEW | UNDO)
+    ├─ UPSERT cursors          atomic with entity writes
+    └─ Sweeper: getSlot(finalized) → UPDATE status = FINAL
+    ▼
+PostgREST  (auto REST API over Postgres schema)
+    ▼
+seahorn-gateway  (Axum 0.8)
+    ├─ Validates TAP-Receipt header (EIP-712 + ecrecover)
+    ├─ Checks authorized_senders, data_service_address, staleness
+    ├─ Persists receipt → unique (signer, nonce) prevents replay
+    ├─ Proxies request to PostgREST
+    └─ Background: aggregates receipts → RAVs → collect() on Arbitrum One
 ```
 
-The `Handler → ChangeSet` split is non-negotiable. It is what makes handlers deterministic, testable without a database, and eventually compatible with Proof-of-Indexing on The Graph's Horizon protocol.
+### Instruction decoders
 
----
-
-## Current state
-
-| Crate | Status | What it does |
-|---|---|---|
-| `seahorn-core` | ✅ | `Substrate`, `Handler`, `Sink` traits + `ChangeSet`, `SubstrateEvent`, `Step`, `Cursor`, `Value` types |
-| `seahorn-substrate-mock` | ✅ | `PumpfunMockSubstrate` — synthetic buy/sell/create stream, no credentials needed |
-| `seahorn-handler-pumpfun` | ✅ | Anchor discriminators via SHA-256, Borsh decode, typed `Buy` / `Sell` / `Create` structs |
-| `seahorn-sink-postgres` | ✅ | Append-only writes, JSONB fields, cursor persistence, finalization sweeper |
-| `seahorn-handler-raydium` | ✅ | Raydium CLMM — swap, openPosition, addLiquidity, removeLiquidity (+ v2 variants) |
-| `seahorn-handler-jupiter` | ✅ | Jupiter v6 — shared_accounts_route, exact_out_route, route_plan skip table (40+ Swap variants) |
-| `MultiHandler` (in core) | ✅ | Run any combination of handlers against the same stream simultaneously |
-| `StdoutSink` (in runtime) | ✅ | Pretty-prints each `ChangeSet` to terminal |
-| Yellowstone gRPC substrate (in runtime) | ✅ | Live data via any Yellowstone endpoint, multi-program filter |
-| Docker Compose | ✅ | `postgres` + `postgrest` — REST API at `localhost:3000` |
-| `SolanaDataService.sol` | ✅ | Horizon DataService contract — provider registration, per-program startService, TAP v2 collect |
-| `seahorn-gateway` | ✅ | Axum payment gateway in front of PostgREST — TAP receipt validation, RAV aggregation, on-chain collection |
-
-### What comes next
-
-| Step | What it delivers |
+| Program | Instructions |
 |---|---|
-| Deploy `SolanaDataService.sol` | Register on Arbitrum One; provision GRT stake via HorizonStaking |
-| Horizon network registration | Indexer-agent wires the gateway into The Graph's payment network |
-| More programs | Orca Whirlpools, Drift, Marginfi via the same `Handler` trait |
+| **Pump.fun** | Buy, Sell, Create |
+| **Raydium CLMM** | Swap, SwapV2, OpenPosition, OpenPositionV2, AddLiquidity, RemoveLiquidity |
+| **Jupiter v6** | SharedAccountsRoute, ExactOutRoute (full 40+ variant route-plan) |
+
+### Query interface (PostgREST)
+
+```
+GET /buys?commitment_status=eq.FINAL&order=slot.desc&limit=100
+GET /raydium_swaps?pool=eq.{pool_address}
+GET /jupiter_swaps?user=eq.{wallet}&slot=gte.{from_slot}
+```
+
+Every request must carry a signed TAP receipt:
+```
+TAP-Receipt: {"allocation_id":"0x...","fees":"1000000","signature":"0x..."}
+```
 
 ---
 
-## Running locally
+## Workspace
 
-### stdout (no dependencies)
+```
+crates/
+  seahorn-core             — Substrate / Handler / Sink traits
+  seahorn-handler-pumpfun  — Pump.fun Buy/Sell/Create decoder
+  seahorn-handler-raydium  — Raydium CLMM decoder
+  seahorn-handler-jupiter  — Jupiter v6 decoder
+  seahorn-substrate-mock   — Synthetic event streams for testing
+  seahorn-sink-postgres    — Append-only Postgres sink + cursor + sweeper
+  seahorn-gateway          — TAP v2 payment gateway (Axum 0.8)
+contracts/
+  SolanaDataService.sol    — Horizon DataService contract
+  interfaces/ISolanaDataService.sol
+test/
+  SolanaDataService.t.sol  — 37 Foundry unit tests
+script/
+  Deploy.s.sol             — UUPS proxy deploy script
+```
+
+---
+
+## Running
+
+### Prerequisites
+
+- Rust (edition 2024)
+- PostgreSQL 15+
+- PostgREST
+- Yellowstone gRPC endpoint (Chainstack / Triton / Helius)
+- Foundry (for contract work)
+
+### Configuration
+
+Copy `.env.example` to `.env` and fill in:
+
+```env
+# Solana indexer
+YELLOWSTONE_ENDPOINT=https://your-endpoint.example.com
+YELLOWSTONE_TOKEN=your_api_token_here
+DATABASE_URL=postgres://seahorn:seahorn@localhost:5432/seahorn
+SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+RUST_LOG=seahorn=info
+
+# Gateway
+GATEWAY_CONFIG=gateway.toml    # path to gateway.toml
+```
+
+See `crates/seahorn-gateway/gateway.example.toml` for gateway configuration (TAP authorized senders, rate limits, PostgREST URL, etc).
+
+### Start services
 
 ```bash
-cargo run -- --mock                    # Pump.fun
-cargo run -- --mock --raydium          # Raydium CLMM
-cargo run -- --mock --jupiter          # Jupiter v6
-cargo run -- --mock --all              # all three simultaneously
-```
-
-```
-[slot    320000001] [NEW  ] 🟢 Buy    mint=So111111…  user=7GGYZKiR…  tokens=   32814388798  sol=0.5353
-[slot    320000004] [NEW  ] 🔴 Sell   mint=7dHbWXmc…  user=2CwSqTNe…  tokens=    1452378735  sol=0.4344
-[slot    320000010] [NEW  ] ✨ Create mint=9mRt3xKp…  name=PumpMoon    sym=PMOON  creator=3aKw7xPq…
-```
-
-### Postgres + PostgREST (full stack)
-
-```bash
-# 1. Start postgres + postgrest
+# Postgres + PostgREST
 docker compose up -d
 
-# 2. Configure
-cp .env.example .env
-# Set DATABASE_URL (already matches docker-compose defaults)
-# Set SOLANA_RPC_URL to enable the finalization sweeper (optional)
+# Index Pump.fun (runs migrations, starts from last cursor)
+cargo run -- --pumpfun
 
-# 3. Run with mock data
-cargo run -- --mock --postgres
+# Index all three programs
+cargo run -- --all
 
-# 4. Query via PostgREST
-curl 'http://localhost:3000/entity_changes?entity_type=eq.Buy&order=slot.desc&limit=10'
+# Run gateway
+cd crates/seahorn-gateway && cargo run
 ```
 
-Apply typed views for cleaner queries:
+### Flags
 
-```bash
-psql $DATABASE_URL -f docker/views.sql
-curl 'http://localhost:3000/buys?commitment_status=eq.NEW&order=slot.desc'
-```
-
-### Live Solana data
-
-```bash
-cp .env.example .env
-# Set YELLOWSTONE_ENDPOINT and YELLOWSTONE_TOKEN
-cargo run -- --postgres
-```
-
-### Gateway (Horizon / TAP payments)
-
-The gateway sits in front of PostgREST and requires a valid TAP v2 receipt on every request.
-
-```bash
-# 1. Create gateway.toml (see crates/seahorn-gateway/gateway.example.toml)
-cp crates/seahorn-gateway/gateway.example.toml gateway.toml
-# Edit: data_service_address, service_provider_address, operator_private_key, authorized_senders
-
-# 2. Run (reads DATABASE_URL from gateway.toml, proxies to postgrest_url)
-cargo run -p seahorn-gateway
-
-# 3. Query with a TAP receipt header
-curl 'http://localhost:8080/buys?order=slot.desc&limit=10' \
-  -H 'TAP-Receipt: {"receipt":{...},"signature":"0x..."}'
-```
-
----
-
-## Workspace layout
-
-```
-seahorn/
-├── contracts/
-│   ├── SolanaDataService.sol              # Horizon DataService — provider registration + TAP collect
-│   └── interfaces/ISolanaDataService.sol  # Interface
-├── crates/
-│   ├── seahorn-core/              # Core traits, types, MultiHandler
-│   ├── seahorn-substrate-mock/    # Mock substrates (Pump.fun, Raydium CLMM, Jupiter v6)
-│   ├── seahorn-handler-pumpfun/   # Pump.fun decoder (Anchor + Borsh)
-│   ├── seahorn-handler-raydium/   # Raydium CLMM decoder (swap, position, liquidity)
-│   ├── seahorn-handler-jupiter/   # Jupiter v6 decoder (route_plan skip table)
-│   ├── seahorn-sink-postgres/     # PostgresSink with cursor persistence + sweeper
-│   └── seahorn-gateway/           # Axum TAP payment gateway (validate → persist → proxy → collect)
-├── docker/
-│   ├── init.sql                   # PostgREST web_anon role
-│   └── views.sql                  # Typed views: buys, sells, creates
-├── docker-compose.yml
-└── src/main.rs                    # Runtime: wires substrate → handler → sink
-```
-
----
-
-## Yellowstone endpoints
-
-The live substrate requires a Yellowstone gRPC endpoint.
-
-| Provider | Entry price | Notes |
-|---|---|---|
-| Chainstack | $49/mo | Marketplace → search "Yellowstone" |
-| Triton Dragon's Mouth | PAYG, $125 deposit | production-grade, cursor resume |
-| Helius LaserStream | $499/mo (Business) | sub-second latency, 24h replay |
-
----
-
-## Operator economics (target)
-
-| Item | Cost |
+| Flag | Program |
 |---|---|
-| Yellowstone gRPC subscription | $49–$499/mo |
-| Compute host (8 vCPU, 32 GB) | $80–$150/mo |
-| Postgres (Hetzner AX42 class) | $50/mo |
-| **Total MVP** | **~$200–$700/mo** |
+| `--pumpfun` | Pump.fun |
+| `--raydium` | Raydium CLMM |
+| `--jupiter` | Jupiter v6 |
+| `--all` | All three simultaneously |
+
+---
+
+## Testing
+
+### Rust unit tests (no infrastructure required)
+
+```bash
+cargo test --workspace
+# 15 unit tests: 4 Pump.fun, 3 Raydium, 2 Jupiter, 6 TAP gateway
+```
+
+### PostgresSink integration tests (requires Docker)
+
+```bash
+cargo test -p seahorn-sink-postgres
+# 9 integration tests — spins up throwaway Postgres via testcontainers
+# Skips gracefully if Docker is not running
+```
+
+### Foundry contract tests
+
+```bash
+# Install deps first (one-time)
+forge install graphprotocol/contracts --no-git
+forge install OpenZeppelin/openzeppelin-contracts-upgradeable --no-git
+
+forge test
+# 37 tests — full SolanaDataService lifecycle
+```
+
+---
+
+## Provider registration (next steps)
+
+To operate as a provider on mainnet:
+
+1. **Stake GRT** — call `HorizonStaking.provision(yourAddress, 0xdDE3F913..., 555e18, maxVerifierCut, thawingPeriod)` on Arbitrum One
+2. **Register** — call `SolanaDataService.register(yourAddress, abi.encode(endpoint, geoHash, paymentsDestination))`
+3. **Start indexing** — call `SolanaDataService.startService(yourAddress, abi.encode("JUP6LkbZ...", endpoint))` for each program
+4. **Run the stack** — Yellowstone → seahorn → Postgres → PostgREST → seahorn-gateway
+
+---
+
+## References
+
+- [GRC-007: Seahorn RFC](./rfc.md)
+- [GIP-0066: Graph Horizon](https://forum.thegraph.com/t/gip-0066-graph-horizon/5587)
+- [GIP-0054: GraphTally (TAP v2)](https://forum.thegraph.com/t/gip-0054-graph-tally/5346)
+- [Yellowstone gRPC](https://docs.yellowstone.io)
