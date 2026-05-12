@@ -32,7 +32,7 @@ Seahorn indexes Solana program activity into typed, fork-correct, queryable enti
 | PostgresSink (fork-correct, cursor resume, finalization sweeper) | **Working** |
 | seahorn-gateway (TAP v2 validation, RAV aggregation, rate limiting) | **Working** |
 | PostgresSink integration tests (testcontainers) | **Written — need Docker** |
-| Provider registration (stake GRT + call register/startService) | **TODO** |
+| Provider registration (stake GRT + call register/startService) | **Done** |
 | Live Yellowstone → Postgres → PostgREST end-to-end | **TODO** |
 | First paid query on mainnet | **TODO** |
 
@@ -194,14 +194,23 @@ forge test
 
 ---
 
-## Provider registration (next steps)
+## Provider registration
 
-To operate as a provider on mainnet:
+Lodestar is registered as a provider on mainnet. For reference, the steps were:
 
 1. **Stake GRT** — call `HorizonStaking.provision(yourAddress, 0xdDE3F913..., 555e18, maxVerifierCut, thawingPeriod)` on Arbitrum One
 2. **Register** — call `SolanaDataService.register(yourAddress, abi.encode(endpoint, geoHash, paymentsDestination))`
-3. **Start indexing** — call `SolanaDataService.startService(yourAddress, abi.encode("JUP6LkbZ...", endpoint))` for each program
-4. **Run the stack** — Yellowstone → seahorn → Postgres → PostgREST → seahorn-gateway
+3. **Add programs to allowlist** — owner calls `SolanaDataService.addProgram(programId)` for each supported program
+4. **Start indexing** — call `SolanaDataService.startService(yourAddress, abi.encode(programId, endpoint))` for each program
+5. **Run the stack** — Yellowstone → seahorn → Postgres → PostgREST → seahorn-gateway
+
+Supported program IDs:
+
+| Program | ID |
+|---|---|
+| Pump.fun | `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` |
+| Raydium CLMM | `CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK` |
+| Jupiter v6 | `JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4` |
 
 ---
 
