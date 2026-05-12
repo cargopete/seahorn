@@ -9,9 +9,9 @@ import {DataServiceFees} from "@graphprotocol/horizon/data-service/extensions/Da
 import {
     DataServicePausableUpgradeable
 } from "@graphprotocol/horizon/data-service/extensions/DataServicePausableUpgradeable.sol";
-import {IGraphPayments} from "@graphprotocol/horizon/interfaces/IGraphPayments.sol";
-import {IGraphTallyCollector} from "@graphprotocol/horizon/interfaces/IGraphTallyCollector.sol";
-import {IHorizonStaking} from "@graphprotocol/horizon/interfaces/IHorizonStaking.sol";
+import {IGraphPayments} from "@graphprotocol/interfaces/contracts/horizon/IGraphPayments.sol";
+import {IGraphTallyCollector} from "@graphprotocol/interfaces/contracts/horizon/IGraphTallyCollector.sol";
+import {IHorizonStaking} from "@graphprotocol/interfaces/contracts/horizon/IHorizonStaking.sol";
 
 import {ISolanaDataService} from "./interfaces/ISolanaDataService.sol";
 
@@ -139,12 +139,8 @@ contract SolanaDataService is
 
     /// @notice Register as a Solana data provider.
     /// @param data ABI-encoded (string endpoint, string geoHash, address paymentsDestination).
-    function register(address serviceProvider, bytes calldata data)
-        external
-        override
-        whenNotPaused
-        onlyAuthorizedForProvision(serviceProvider)
-    {
+    function register(address serviceProvider, bytes calldata data) external override whenNotPaused {
+        _requireAuthorizedForProvision(serviceProvider);
         if (registeredProviders[serviceProvider]) {
             revert ProviderAlreadyRegistered(serviceProvider);
         }
@@ -161,7 +157,8 @@ contract SolanaDataService is
 
     /// @notice Deregister as a Solana data provider.
     /// @dev All program registrations must be stopped first.
-    function deregister(address serviceProvider, bytes calldata) external onlyAuthorizedForProvision(serviceProvider) {
+    function deregister(address serviceProvider, bytes calldata) external {
+        _requireAuthorizedForProvision(serviceProvider);
         if (!registeredProviders[serviceProvider]) revert ProviderNotRegistered(serviceProvider);
         if (activeRegistrationCount(serviceProvider) > 0) revert ActiveRegistrationsExist(serviceProvider);
 
@@ -179,12 +176,8 @@ contract SolanaDataService is
 
     /// @notice Activate indexing service for a specific Solana program.
     /// @param data ABI-encoded (string programId, string endpoint).
-    function startService(address serviceProvider, bytes calldata data)
-        external
-        override
-        whenNotPaused
-        onlyAuthorizedForProvision(serviceProvider)
-    {
+    function startService(address serviceProvider, bytes calldata data) external override whenNotPaused {
+        _requireAuthorizedForProvision(serviceProvider);
         if (!registeredProviders[serviceProvider]) revert ProviderNotRegistered(serviceProvider);
 
         (string memory programId, string memory endpoint) = abi.decode(data, (string, string));
@@ -215,11 +208,8 @@ contract SolanaDataService is
 
     /// @notice Deactivate indexing service for a specific Solana program.
     /// @param data ABI-encoded (string programId).
-    function stopService(address serviceProvider, bytes calldata data)
-        external
-        override
-        onlyAuthorizedForProvision(serviceProvider)
-    {
+    function stopService(address serviceProvider, bytes calldata data) external override {
+        _requireAuthorizedForProvision(serviceProvider);
         string memory programId = abi.decode(data, (string));
 
         ProgramRegistration[] storage regs = _providerPrograms[serviceProvider];
@@ -283,11 +273,8 @@ contract SolanaDataService is
     }
 
     /// @notice Accept pending changes to this provider's provision parameters.
-    function acceptProvisionPendingParameters(address serviceProvider, bytes calldata)
-        external
-        override
-        onlyAuthorizedForProvision(serviceProvider)
-    {
+    function acceptProvisionPendingParameters(address serviceProvider, bytes calldata) external override {
+        _requireAuthorizedForProvision(serviceProvider);
         _acceptProvisionParameters(serviceProvider);
     }
 

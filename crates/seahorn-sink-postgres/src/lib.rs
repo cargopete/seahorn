@@ -5,8 +5,11 @@ use seahorn_core::{ChangeSet, Cursor, EntityChange, Sink, Step, Value};
 use serde_json::{Map, Value as Json};
 use sqlx::{PgPool, Row};
 
+#[cfg(test)]
+mod tests;
+
 pub struct PostgresSink {
-    pool: PgPool,
+    pub(crate) pool: PgPool,
     cursor_name: String,
 }
 

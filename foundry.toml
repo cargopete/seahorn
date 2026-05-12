@@ -1,0 +1,17 @@
+[profile.default]
+src = "contracts"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib"]
+remappings = [
+    "@graphprotocol/horizon/=lib/contracts/packages/horizon/contracts/",
+    "@graphprotocol/interfaces/=lib/contracts/packages/interfaces/",
+    "@graphprotocol/contracts/=lib/contracts/packages/contracts/",
+    "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/contracts/",
+]
+solc_version = "0.8.27"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
