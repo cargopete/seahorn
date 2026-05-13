@@ -141,13 +141,21 @@ async fn fetch_finalized_slot(client: &reqwest::Client, rpc_url: &str) -> Result
         "params": [{"commitment": "finalized"}]
     });
 
-    let resp: serde_json::Value = client
-        .post(rpc_url)
-        .json(&body)
-        .send()
-        .await?
-        .json()
-        .await?;
+    // Extract basic auth credentials embedded in the URL (user:pass@host),
+    // then strip them before sending — reqwest does not do this automatically.
+    let parsed = url::Url::parse(rpc_url)?;
+    let user = parsed.username().to_string();
+    let pass = parsed.password().map(str::to_string);
+    let mut clean = parsed.clone();
+    clean.set_username("").ok();
+    clean.set_password(None).ok();
+
+    let mut builder = client.post(clean.as_str()).json(&body);
+    if !user.is_empty() {
+        builder = builder.basic_auth(user, pass);
+    }
+
+    let resp: serde_json::Value = builder.send().await?.json().await?;
 
     resp["result"]
         .as_u64()
