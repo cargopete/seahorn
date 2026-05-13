@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use alloy_primitives::B256;
 use axum::{extract::State, http::StatusCode, routing::{any, get}, Router};
+use std::net::SocketAddr;
 use reqwest::Client;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 
@@ -100,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(%addr, postgrest = %config.backend.postgrest_url, "seahorn-gateway listening");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
 }
