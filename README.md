@@ -4,6 +4,8 @@
 
 Seahorn indexes Solana program activity into typed, fork-correct, queryable entities and gates access via TAP v2 micropayments. It is the missing third lane alongside Subgraphs (EVM entities) and Substreams (pure-compute transforms): a Rust-native service that turns raw Solana instructions into structured data, served over a REST API and paid for per-query in GRT.
 
+> **Disclaimer:** Seahorn is an experimental, community-led project. It is not endorsed by, affiliated with, or supported by the Graph Foundation or Edge & Node.
+
 ---
 
 ## Deployment
