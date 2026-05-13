@@ -4260,6 +4260,7 @@ dependencies = [
  "testcontainers-modules",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

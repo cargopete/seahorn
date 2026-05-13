@@ -70,11 +70,13 @@ pub async fn handler(
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    // Forward Content-Type if present (for POST/PATCH).
+    // Forward safe request headers to PostgREST.
     let mut builder = state.http_client.request(method, &backend_url);
-    if let Some(ct) = req.headers().get("content-type") {
-        if let Ok(ct_str) = ct.to_str() {
-            builder = builder.header("content-type", ct_str);
+    for name in ["content-type", "prefer", "range", "range-unit", "accept"] {
+        if let Some(v) = req.headers().get(name) {
+            if let Ok(s) = v.to_str() {
+                builder = builder.header(name, s);
+            }
         }
     }
 
@@ -101,16 +103,26 @@ pub async fn handler(
         .unwrap_or("application/json")
         .to_owned();
 
+    let content_range = resp
+        .headers()
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     let resp_bytes = resp
         .bytes()
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
 
-    Ok(Response::builder()
+    let mut response = Response::builder()
         .status(status)
-        .header("content-type", content_type)
-        .body(Body::from(resp_bytes))
-        .unwrap())
+        .header("content-type", content_type);
+
+    if let Some(cr) = content_range {
+        response = response.header("content-range", cr);
+    }
+
+    Ok(response.body(Body::from(resp_bytes)).unwrap())
 }
 
 /// Returns true if the error is a Postgres unique-constraint violation (SQLSTATE 23505).

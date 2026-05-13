@@ -74,14 +74,17 @@ pub enum EntityChange {
 #[derive(Debug, Clone)]
 pub struct ChangeSet {
     pub slot: u64,
+    /// Raw transaction signature bytes (64 bytes on Solana). Used by sinks for
+    /// the `tx_signature` column — encoded to base58 before storage.
+    pub signature: Vec<u8>,
     pub step: Step,
     pub cursor: Cursor,
     pub changes: Vec<EntityChange>,
 }
 
 impl ChangeSet {
-    pub fn empty(slot: u64, step: Step, cursor: Cursor) -> Self {
-        Self { slot, step, cursor, changes: Vec::new() }
+    pub fn empty(slot: u64, signature: Vec<u8>, step: Step, cursor: Cursor) -> Self {
+        Self { slot, signature, step, cursor, changes: Vec::new() }
     }
 
     pub fn push(mut self, change: EntityChange) -> Self {

@@ -10,7 +10,7 @@ pub struct RaydiumClmmHandler;
 
 impl Handler for RaydiumClmmHandler {
     fn handle(&self, event: &SubstrateEvent) -> ChangeSet {
-        let mut cs = ChangeSet::empty(event.slot, event.step, event.cursor.clone());
+        let mut cs = ChangeSet::empty(event.slot, event.signature.clone(), event.step, event.cursor.clone());
 
         for ix in &event.instructions {
             if ix.program_id != RAYDIUM_CLMM_PROGRAM_ID_BYTES.as_slice() {

@@ -63,7 +63,7 @@ impl PostgresSink {
 
 impl Sink for PostgresSink {
     async fn apply(&self, cs: &ChangeSet) -> Result<()> {
-        let sig = bs58::encode(&cs.cursor.0).into_string();
+        let sig = bs58::encode(&cs.signature).into_string();
 
         match cs.step {
             Step::New | Step::Undo => {

@@ -371,7 +371,18 @@ impl Substrate for YellowstoneSubstrate {
                     continue;
                 }
 
-                let account_keys: Vec<Vec<u8>> = msg.account_keys.clone();
+                // Build the full account list: static keys + ALT-resolved addresses.
+                // Jupiter v6 (and many DeFi programs) use Address Lookup Tables,
+                // so mint and pool accounts often appear only in the loaded addresses,
+                // not in the static message account_keys.
+                let account_keys: Vec<Vec<u8>> = {
+                    let mut keys = msg.account_keys.clone();
+                    if let Some(meta) = &tx_info.meta {
+                        keys.extend_from_slice(&meta.loaded_writable_addresses);
+                        keys.extend_from_slice(&meta.loaded_readonly_addresses);
+                    }
+                    keys
+                };
 
                 let instructions = msg.instructions.iter().map(|ix| {
                     seahorn_core::RawInstruction {

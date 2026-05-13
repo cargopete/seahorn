@@ -52,7 +52,7 @@ impl MultiHandler {
 
 impl Handler for MultiHandler {
     fn handle(&self, event: &SubstrateEvent) -> ChangeSet {
-        let mut cs = ChangeSet::empty(event.slot, event.step, event.cursor.clone());
+        let mut cs = ChangeSet::empty(event.slot, event.signature.clone(), event.step, event.cursor.clone());
         for h in &self.handlers {
             cs.changes.extend(h.handle(event).changes);
         }

@@ -12,7 +12,7 @@ pub struct JupiterV6Handler;
 
 impl Handler for JupiterV6Handler {
     fn handle(&self, event: &SubstrateEvent) -> ChangeSet {
-        let mut cs = ChangeSet::empty(event.slot, event.step, event.cursor.clone());
+        let mut cs = ChangeSet::empty(event.slot, event.signature.clone(), event.step, event.cursor.clone());
 
         for ix in &event.instructions {
             if ix.program_id != JUPITER_V6_PROGRAM_ID_BYTES.as_slice() {

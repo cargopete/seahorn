@@ -7,7 +7,7 @@ impl Handler for PumpfunHandler {
     fn handle(&self, event: &SubstrateEvent) -> ChangeSet {
         let program_id = bs58::decode(PUMPFUN_PROGRAM_ID).into_vec().unwrap_or_default();
         let sig = bs58::encode(&event.signature).into_string();
-        let mut cs = ChangeSet::empty(event.slot, event.step, event.cursor.clone());
+        let mut cs = ChangeSet::empty(event.slot, event.signature.clone(), event.step, event.cursor.clone());
 
         for ix in &event.instructions {
             if ix.program_id != program_id {
